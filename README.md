@@ -53,8 +53,97 @@ The system provides visibility into:
 - where failures occurred
 - when approvals are required
 
-## Example Workflow
+---
 
-### User Input
-```text
-When a critical GitHub bug is created, notify the engineering team on Slack, create an escalation tracker entry, and request manager approval before assigning priority.
+## Project Structure
+
+```
+FlowMind/
+├── backend/                    # FastAPI backend
+│   ├── app.py                  # API endpoints (execute, approve, status)
+│   ├── connectors/             # Fake tool connectors (mock_pm, slack, github, sheets)
+│   │   └── registry.py         # Dispatcher: tool name → connector
+│   └── runtime/
+│       ├── normalize.py        # LLM output → internal task list
+│       ├── executor.py         # Sequential step runner with approval gates
+│       ├── store.py            # In-memory run state tracking
+│       └── agent_runner.py     # Bridges LLM agent → backend executor
+├── frontend/                   # Static frontend UI
+│   ├── index.html
+│   ├── index.css
+│   └── app.js
+├── docs/                       # Hackathon documents
+├── agent.py                    # LLM agent brain (Groq / Llama 3.3)
+├── requirements.txt
+├── .env.example
+└── smoke_test.py               # API smoke test
+```
+
+## How to Run
+
+### Prerequisites
+
+```bash
+pip install -r requirements.txt
+```
+
+Copy the environment template and add your Groq API key (only needed for the LLM agent, not for the backend):
+
+```bash
+cp .env.example .env
+# Edit .env and set GROQ_API_KEY=your_key_here
+```
+
+### Start the Backend
+
+```bash
+python -m uvicorn backend.app:app --reload --port 8000
+```
+
+Backend will be available at: **http://localhost:8000**
+
+API docs (Swagger): **http://localhost:8000/docs**
+
+### Start the Frontend
+
+```bash
+python -m http.server 5500 --directory frontend
+```
+
+Frontend will be available at: **http://localhost:5500**
+
+### Run the Smoke Test
+
+With the backend running on port 8000:
+
+```bash
+python smoke_test.py
+```
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/execute-workflow` | Submit LLM steps for execution |
+| `POST` | `/approve-step` | Approve a paused approval step |
+| `GET`  | `/run/{run_id}` | Get current run state |
+
+### Example: Execute a Workflow
+
+```bash
+curl -X POST http://localhost:8000/execute-workflow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "steps": [
+      {"tool": "mock_pm", "input": "Fetch critical issue"},
+      {"tool": "slack", "input": "Alert the team"},
+      {"tool": "github", "input": "Create follow-up issue"},
+      {"tool": "sheets", "input": "Log to escalation sheet"},
+      {"tool": "approval", "input": "Approve before escalation"}
+    ]
+  }'
+```
+
+---
+
+*Built with intent by **FlowMind AI** — Team NexaMind | Tic Tech Toe 2026*
