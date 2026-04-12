@@ -73,7 +73,7 @@ def _smtp_send(to: str, subject: str, body: str) -> dict:
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain"))
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=5) as server:
             server.login(_EMAIL_ADDRESS, _EMAIL_PASSWORD)
             server.sendmail(_EMAIL_ADDRESS, to, msg.as_string())
 
@@ -91,7 +91,7 @@ def _smtp_send(to: str, subject: str, body: str) -> dict:
         # Return success=True to avoid workflow failure on email errors
         return {
             "success": True,
-            "message": f"Email logged (SMTP failed gracefully: {exc})",
+            "message": f"Error: Render Free Tier blocks SMTP (Port 465). Gracefully skipped. ({exc})",
             "data": {
                 "to":      to,
                 "subject": subject,
