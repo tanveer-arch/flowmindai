@@ -35,6 +35,7 @@ __temp_merge/
 
 # Google Service Account credentials (NEVER commit this!)
 *.json
+!vercel.json
 !package.json
 
 # Node.js / MCP server cache
