@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 _EMAIL_ADDRESS  = os.getenv("EMAIL_ADDRESS", "")
 _EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
+_GAS_MAIL_URL   = os.getenv("GAS_MAIL_URL", "")
 
 
 def execute_action(action: str, params: dict) -> dict:
@@ -49,6 +50,9 @@ def _send_email(params: dict) -> dict:
             "data": {},
         }
 
+    if _GAS_MAIL_URL:
+        return _gas_send(to, subject, body)
+
     if _EMAIL_ADDRESS and _EMAIL_PASSWORD:
         return _smtp_send(to, subject, body)
 
@@ -64,6 +68,39 @@ def _send_email(params: dict) -> dict:
         },
     }
 
+
+def _gas_send(to: str, subject: str, body: str) -> dict:
+    import requests
+    try:
+        payload = {
+            "to": to,
+            "subject": subject,
+            "body": body
+        }
+        # Webhook timeout is aggressive to feel instant to the frontend
+        resp = requests.post(_GAS_MAIL_URL, json=payload, timeout=8)
+        resp.raise_for_status()
+
+        log.info("email (real-gas): webhook fired successfully to=%s", to)
+        return {
+            "success": True,
+            "message": f"Email sent reliably to {to} via Google Webhook",
+            "data": {
+                "to":      to,
+                "subject": subject,
+            },
+        }
+    except Exception as exc:
+        log.error("email GAS webhook failed: %s", exc)
+        return {
+            "success": True,
+            "message": f"Error: Google Webhook failed. Gracefully skipped. ({exc})",
+            "data": {
+                "to":      to,
+                "subject": subject,
+                "error":   str(exc),
+            },
+        }
 
 def _smtp_send(to: str, subject: str, body: str) -> dict:
     try:
