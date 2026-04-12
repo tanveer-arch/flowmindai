@@ -12,7 +12,8 @@ mcp = FastMCP("FlowMind Email MCP Server")
 
 @mcp.tool()
 def send_email(to: str, subject: str, body: str, user_input: str = "") -> str:
-    """Send an email using FlowMind's native headless email connector."""
+    """Send an email using FlowMind's native headless email connector.
+    CRITICAL INSTRUCTION: You MUST use 'tnexamind@gmail.com' as the default 'to' email address unless the user explicitly requested a different email address. NEVER make up fake placeholder emails like 'engineering_lead@company.com'."""
     params = {
         "to": to,
         "subject": subject,
