@@ -1,279 +1,315 @@
 """
-FlowMind AI — LLM Agent Brain (Groq Edition)
-Converts natural language workflow instructions into structured JSON tool steps.
-Uses Groq API (FREE) with Llama 3.3 70B model.
-Team NexaMind | Tic Tech Toe '26
+FlowMind — Member 4: Agent & Orchestration
+File: agent.py
+
+Exposes: generate_steps(prompt: str) -> {"steps": [...]}
+
+Calls Groq API (llama-3.3-70b-versatile) with a structured system prompt that forces
+the LLM to produce a strict JSON workflow plan.  Includes one automatic retry
+on JSON parse failure before raising.
 """
 
 import json
+import logging
 import os
-import sys
+
 from dotenv import load_dotenv
 from groq import Groq
 
 load_dotenv()
 
-# ============================================================
-# 1. SYSTEM PROMPT (READY TO USE)
-# ============================================================
+log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are FlowMind AI, a workflow automation engine.
-
-Your ONLY job: convert the user's natural language instruction into a JSON list of tool steps.
-
-AVAILABLE TOOLS (use ONLY these):
-1. send_slack_message(message: string)   — sends a message to Slack
-2. create_github_issue(title: string)    — creates a GitHub issue
-3. update_google_sheet(data: string)     — adds/updates a row in Google Sheets
-
-RULES:
-- Return ONLY valid JSON. No explanations. No markdown. No extra text. No code fences.
-- Use ONLY the tools listed above. If the user asks for a tool that doesn't exist, skip it.
-- Each step must have exactly two fields: "tool" (string) and "input" (string).
-- "input" must be a short, clear string describing what to pass to the tool.
-- Order steps logically based on the user's intent.
-- If the user's input is vague, interpret it reasonably and generate the best possible steps.
-- If no valid tool matches the request, return: {"steps": []}
-- Do NOT wrap output in ```json``` or any markdown.
-
-OUTPUT FORMAT (strict):
-{"steps": [{"tool": "<tool_name>", "input": "<string>"}]}"""
+# ---------------------------------------------------------------------------
+# Client (initialised lazily so missing key doesn't crash import)
+# ---------------------------------------------------------------------------
+_client: Groq | None = None
 
 
-# ============================================================
-# 2. CORE FUNCTIONS
-# ============================================================
+def _get_client() -> Groq:
+    global _client
+    if _client is None:
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise EnvironmentError(
+                "GROQ_API_KEY is not set. Add it to your .env file."
+            )
+        _client = Groq(api_key=api_key)
+    return _client
 
-def generate_steps(user_prompt: str) -> dict:
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+SYSTEM_PROMPT = """You are FlowMind AI, a workflow automation engine \
+powered by real MCP (Model Context Protocol) servers.
+
+AVAILABLE TOOLS — use ONLY these exact names:
+1. create_jira_ticket
+   params: summary (string), description (string), priority (string)
+   → creates Jira ticket, returns ticket_id like JRA-42
+
+2. create_github_issue
+   params: title (string), body (string)
+   → creates GitHub issue via real MCP server
+   → if Jira ran before this, mention ticket_id in body
+
+3. update_google_sheet
+   params: sheet_name (string), row_data (object)
+   → appends row via real Google Sheets MCP server
+   → include ALL data from prior steps in row_data
+
+4. send_email
+   params: to (string), subject (string), body (string)
+   → sends real email via Gmail MCP server
+
+5. request_approval
+   params: reason (string)
+   → pauses workflow, human must approve before continuing
+
+6. request_user_input
+   params: question (string)
+   → pauses to collect custom input from user
+
+STRICT RULES:
+- Return ONLY valid JSON. No markdown. No explanation. No text outside JSON.
+- If workflow involves email: ALWAYS put request_user_input \
+  IMMEDIATELY BEFORE send_email. No exceptions.
+- If action is sensitive (delete, publish, broadcast to all): \
+  add request_approval before it.
+- Chain data between steps: if Jira creates JRA-42, \
+  GitHub body must reference JRA-42. \
+  Sheets row must include jira_id and github issue url.
+
+RESPONSE FORMAT — return exactly this structure, nothing else:
+{
+  "steps": [
+    {
+      "tool": "tool_name_here",
+      "params": {
+        "field1": "value1"
+      }
+    }
+  ]
+}
+
+EXAMPLES:
+
+Input: "when a bug is reported create a ticket and notify the team"
+Output:
+{
+  "steps": [
+    {
+      "tool": "create_jira_ticket",
+      "params": {
+        "summary": "Bug reported",
+        "description": "A bug has been reported and logged via FlowMind.",
+        "priority": "High"
+      }
+    },
+    {
+      "tool": "create_github_issue",
+      "params": {
+        "title": "Bug fix needed (Jira: JRA-?)",
+        "body": "Bug reported. Linked to Jira ticket JRA-?. Needs investigation."
+      }
+    },
+    {
+      "tool": "update_google_sheet",
+      "params": {
+        "sheet_name": "Bug Log",
+        "row_data": {
+          "jira_id": "JRA-?",
+          "github_issue": "pending",
+          "status": "open",
+          "type": "bug"
+        }
+      }
+    }
+  ]
+}
+
+Input: "create a task for the design team and email the designer"
+Output:
+{
+  "steps": [
+    {
+      "tool": "create_jira_ticket",
+      "params": {
+        "summary": "Design task assigned",
+        "description": "New design task needs attention from the design team.",
+        "priority": "Medium"
+      }
+    },
+    {
+      "tool": "request_user_input",
+      "params": {
+        "question": "What should the email to the designer say?"
+      }
+    },
+    {
+      "tool": "send_email",
+      "params": {
+        "to": "designer@company.com",
+        "subject": "New design task assigned",
+        "body": "Please check Jira for your new task details."
+      }
+    }
+  ]
+}
+
+Input: "log a security incident and get approval before notifying clients"
+Output:
+{
+  "steps": [
+    {
+      "tool": "create_jira_ticket",
+      "params": {
+        "summary": "Security incident logged",
+        "description": "Security incident detected and requires immediate review.",
+        "priority": "Critical"
+      }
+    },
+    {
+      "tool": "update_google_sheet",
+      "params": {
+        "sheet_name": "Incidents",
+        "row_data": {
+          "type": "security",
+          "jira_id": "JRA-?",
+          "status": "under review"
+        }
+      }
+    },
+    {
+      "tool": "request_approval",
+      "params": {
+        "reason": "About to notify all clients about a security incident. Please approve."
+      }
+    },
+    {
+      "tool": "request_user_input",
+      "params": {
+        "question": "What should the client notification email say?"
+      }
+    },
+    {
+      "tool": "send_email",
+      "params": {
+        "to": "clients@company.com",
+        "subject": "Important security update",
+        "body": "We are writing to inform you about a recent security incident."
+      }
+    }
+  ]
+}
+"""
+
+# Valid tool names the LLM is allowed to produce
+VALID_TOOLS: set[str] = {
+    "create_jira_ticket",
+    "create_github_issue",
+    "update_google_sheet",
+    "send_email",
+    "request_approval",
+    "request_user_input",
+}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def generate_steps(prompt: str) -> dict:
     """
-    Takes a natural language workflow instruction and returns
-    structured JSON steps by calling the Groq LLM.
+    Convert a natural-language workflow description into a structured step plan.
 
     Args:
-        user_prompt: Natural language string from the user.
+        prompt: User's workflow instruction.
 
     Returns:
-        dict with "steps" key containing list of tool steps.
+        {"steps": [{"tool": "...", "params": {...}}, ...]}
+
+    Raises:
+        ValueError: If the LLM returns invalid JSON on both the first attempt
+                    and a single automatic retry.
+        EnvironmentError: If GROQ_API_KEY is not set.
     """
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        print("[ERROR] GROQ_API_KEY not set in .env file!")
-        return {"steps": []}
+    client = _get_client()
 
-    client = Groq(api_key=api_key)
-
+    raw = _call_groq(client, prompt, retry_message=None)
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",   # Free, fast, reliable
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.0,
-            max_tokens=512,
-            response_format={"type": "json_object"}  # Forces JSON output
+        return _parse_and_validate(raw)
+    except ValueError:
+        # --- Retry once with an explicit correction instruction ---
+        log.warning("agent: JSON parse failed on first attempt — retrying with correction hint")
+        raw2 = _call_groq(
+            client,
+            prompt,
+            retry_message="You must return only valid JSON. No text. No markdown. No code fences.",
         )
-        raw_output = response.choices[0].message.content
-        return parse_llm_output(raw_output)
-
-    except Exception as e:
-        print(f"[ERROR] Groq API call failed: {e}")
-        return {"steps": []}
+        try:
+            return _parse_and_validate(raw2)
+        except ValueError:
+            raise ValueError(f"LLM returned invalid JSON: {raw2}")
 
 
-def parse_llm_output(raw: str) -> dict:
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _call_groq(client: Groq, prompt: str, retry_message: str | None) -> str:
+    """Build messages and call the Groq API. Returns the raw string response."""
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": prompt},
+    ]
+    if retry_message:
+        messages.append({"role": "user", "content": retry_message})
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        temperature=0.0,
+        max_tokens=1024,
+        response_format={"type": "json_object"},
+    )
+    return response.choices[0].message.content
+
+
+def _parse_and_validate(raw: str) -> dict:
     """
-    Safely parses LLM output string into validated JSON.
+    Parse raw LLM string as JSON and validate the steps list.
 
-    Args:
-        raw: Raw string from the LLM response.
-
-    Returns:
-        dict with "steps" list. Returns {"steps": []} on any error.
+    Filters out any step whose tool is not in VALID_TOOLS.
+    Raises ValueError on JSON decode failure.
     """
-    # Strip markdown fences if LLM wraps output (safety net)
     cleaned = raw.strip()
+    # Strip accidental markdown fences
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[-1]
-        cleaned = cleaned.rsplit("```", 1)[0]
-        cleaned = cleaned.strip()
+        cleaned = cleaned.rsplit("```", 1)[0].strip()
 
     try:
         data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        print(f"[ERROR] LLM returned invalid JSON:\n{raw}")
-        return {"steps": []}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON from LLM: {exc}") from exc
 
-    # Validate structure
-    if "steps" not in data or not isinstance(data["steps"], list):
-        print(f"[ERROR] Missing or invalid 'steps' key in LLM output")
-        return {"steps": []}
+    raw_steps = data.get("steps", [])
+    if not isinstance(raw_steps, list):
+        raise ValueError("'steps' is not a list")
 
-    valid_tools = {
-        "send_slack_message",
-        "create_github_issue",
-        "update_google_sheet"
-    }
-
-    validated_steps = []
-    for step in data["steps"]:
+    valid_steps = []
+    for step in raw_steps:
         tool = step.get("tool", "")
-        inp = step.get("input", "")
-
-        if tool not in valid_tools:
-            print(f"[WARN] Skipping unknown tool: {tool}")
+        if tool not in VALID_TOOLS:
+            log.warning("agent: skipping unknown tool '%s'", tool)
             continue
+        # Ensure params is always a dict
+        params = step.get("params", {})
+        if not isinstance(params, dict):
+            params = {"raw_input": str(params)}
+        valid_steps.append({"tool": tool, "params": params})
 
-        if not isinstance(inp, str) or not inp.strip():
-            print(f"[WARN] Skipping step with empty input for tool: {tool}")
-            continue
-
-        validated_steps.append({"tool": tool, "input": inp})
-
-    return {"steps": validated_steps}
-
-
-# ============================================================
-# 3. TEST CASES
-# ============================================================
-
-TEST_CASES = [
-    {
-        "input": "When a bug is reported, create a GitHub issue and notify the team on Slack",
-        "expected_tools": ["create_github_issue", "send_slack_message"]
-    },
-    {
-        "input": "Log today's sales data in the spreadsheet and send a summary to Slack",
-        "expected_tools": ["update_google_sheet", "send_slack_message"]
-    },
-    {
-        "input": "Create a GitHub issue for login page crash, update the bug tracker sheet, and alert the dev channel",
-        "expected_tools": ["create_github_issue", "update_google_sheet", "send_slack_message"]
-    },
-    {
-        "input": "Send a Slack message saying deployment is complete",
-        "expected_tools": ["send_slack_message"]
-    },
-    {
-        "input": "Play some music",
-        "expected_tools": []
-    }
-]
-
-
-def run_tests_mock():
-    """Run test cases using mock LLM responses (no API key needed)."""
-    print("\n" + "=" * 60)
-    print("  MOCK TEST CASES (no API key needed)")
-    print("=" * 60)
-
-    mock_responses = [
-        '{"steps": [{"tool": "create_github_issue", "input": "Bug reported"}, {"tool": "send_slack_message", "input": "A bug has been reported. GitHub issue created."}]}',
-        '{"steps": [{"tool": "update_google_sheet", "input": "Today\'s sales data"}, {"tool": "send_slack_message", "input": "Sales data has been logged in the spreadsheet"}]}',
-        '{"steps": [{"tool": "create_github_issue", "input": "Login page crash"}, {"tool": "update_google_sheet", "input": "Login page crash - bug logged"}, {"tool": "send_slack_message", "input": "Alert: Login page crash issue created and logged"}]}',
-        '{"steps": [{"tool": "send_slack_message", "input": "Deployment is complete"}]}',
-        '{"steps": []}',
-    ]
-
-    passed = 0
-    for i, (test, mock_resp) in enumerate(zip(TEST_CASES, mock_responses)):
-        result = parse_llm_output(mock_resp)
-        actual_tools = [s["tool"] for s in result["steps"]]
-        match = test["expected_tools"] == actual_tools
-
-        status = "PASS" if match else "FAIL"
-        if match:
-            passed += 1
-
-        print(f"\nTest {i+1}: {status}")
-        print(f"  Input:    {test['input']}")
-        print(f"  Expected: {test['expected_tools']}")
-        print(f"  Got:      {actual_tools}")
-
-    print(f"\n{'='*60}")
-    print(f"  Results: {passed}/{len(TEST_CASES)} passed")
-    print(f"{'='*60}\n")
-
-
-def run_tests_live():
-    """Run test cases against the real Groq API."""
-    print("\n" + "=" * 60)
-    print("  LIVE TEST CASES (calling Groq API)")
-    print("=" * 60)
-
-    if not os.getenv("GROQ_API_KEY"):
-        print("  GROQ_API_KEY not set in .env -- skipping live tests")
-        return
-
-    passed = 0
-    for i, test in enumerate(TEST_CASES):
-        try:
-            result = generate_steps(test["input"])
-            actual_tools = [s["tool"] for s in result["steps"]]
-            match = test["expected_tools"] == actual_tools
-
-            status = "PASS" if match else "CLOSE" if len(test["expected_tools"]) == len(actual_tools) else "FAIL"
-            if match:
-                passed += 1
-
-            print(f"\nTest {i+1}: {status}")
-            print(f"  Input:    {test['input']}")
-            print(f"  Expected: {test['expected_tools']}")
-            print(f"  Got:      {actual_tools}")
-            print(f"  Output:   {json.dumps(result, indent=2)}")
-
-        except Exception as e:
-            print(f"\nTest {i+1}: ERROR -- {e}")
-
-    print(f"\n{'='*60}")
-    print(f"  Results: {passed}/{len(TEST_CASES)} passed")
-    print(f"{'='*60}\n")
-
-
-# ============================================================
-# 4. INTERACTIVE MODE
-# ============================================================
-
-def interactive():
-    """Run the agent in interactive CLI mode."""
-    print("\n" + "=" * 60)
-    print("  FlowMind AI -- LLM Agent Brain (Groq)")
-    print("  Type a workflow instruction. Type 'quit' to exit.")
-    print("=" * 60)
-
-    if not os.getenv("GROQ_API_KEY"):
-        print("\n  GROQ_API_KEY not set! Add it to .env file.")
-        print("  Running in MOCK mode (test cases only).\n")
-        run_tests_mock()
-        return
-
-    while True:
-        user_input = input("\n>>> ").strip()
-        if user_input.lower() in ("quit", "exit", "q"):
-            print("Done.")
-            break
-        if not user_input:
-            continue
-
-        print("Generating steps...")
-        result = generate_steps(user_input)
-        print(json.dumps(result, indent=2))
-
-
-# ============================================================
-# 5. ENTRY POINT
-# ============================================================
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "--test":
-            run_tests_mock()
-        elif sys.argv[1] == "--test-live":
-            run_tests_live()
-        elif sys.argv[1] == "--prompt":
-            print(SYSTEM_PROMPT)
-        else:
-            result = generate_steps(" ".join(sys.argv[1:]))
-            print(json.dumps(result, indent=2))
-    else:
-        interactive()
+    log.info("agent: generated %d valid steps for prompt", len(valid_steps))
+    return {"steps": valid_steps}

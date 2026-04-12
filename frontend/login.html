@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FlowMind AI - Sign In</title>
+    <meta name="description" content="Secure, modern sign-in for FlowMind AI workflow orchestration." />
+    <meta name="google-signin-client_id" content="1010412273750-gpknmmft8r6al2cqfk82lsuv6n7sblbt.apps.googleusercontent.com" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="index.css" />
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+
+<body>
+    <div class="ambient-bg">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+        <canvas id="gridCanvas"></canvas>
+    </div>
+
+    <main class="auth-page auth-page-modern">
+        <section class="auth-showcase">
+            <div class="auth-showcase-inner">
+                <div class="hero-badge auth-badge">
+                    <span class="badge-dot"></span>
+                    <span>Google OIDC Protected</span>
+                </div>
+
+                <div class="auth-logo auth-logo-left">
+                    <div class="logo-mark">
+                        <svg width="40" height="40" viewBox="0 0 32 32" fill="none">
+                            <defs>
+                                <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32">
+                                    <stop offset="0%" stop-color="#a78bfa" />
+                                    <stop offset="100%" stop-color="#6366f1" />
+                                </linearGradient>
+                            </defs>
+                            <rect width="32" height="32" rx="8" fill="url(#logoGrad)" />
+                            <path d="M10 11h12M10 16h8M10 21h10" stroke="#fff" stroke-width="2.2"
+                                stroke-linecap="round" />
+                            <circle cx="24" cy="21" r="3" fill="#fff" opacity="0.9" />
+                        </svg>
+                    </div>
+                    <span class="brand-text">FlowMind<span class="brand-ai">AI</span></span>
+                </div>
+
+                <h1 class="auth-headline">Transform ideas into intelligent, self-orchestrating workflows.</h1>
+                <p class="auth-copy">
+                    Harness LLM-driven planning that converts natural language into executable, cross-platform
+                    automations — in seconds.
+                </p>
+
+                <div class="auth-metric-grid">
+                    <article class="auth-metric-card">
+                        <span class="auth-metric-value">AI-First</span>
+                        <span class="auth-metric-label">LLM-driven orchestration</span>
+                    </article>
+                    <article class="auth-metric-card">
+                        <span class="auth-metric-value">Real-time</span>
+                        <span class="auth-metric-label">Live execution tracking</span>
+                    </article>
+                    <article class="auth-metric-card">
+                        <span class="auth-metric-value">Adaptive</span>
+                        <span class="auth-metric-label">Self-improving workflows</span>
+                    </article>
+                </div>
+
+                <div class="auth-feature-rail">
+                    <div class="auth-feature-chip">Google Sign-In</div>
+                    <div class="auth-feature-chip">One Tap Ready</div>
+                    <div class="auth-feature-chip">Voice Prompting</div>
+                    <div class="auth-feature-chip">Live DAG Feedback</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="auth-shell">
+            <div class="auth-card auth-card-modern">
+                <div class="auth-card-topline">
+                    <span class="auth-eyebrow">Secure Access</span>
+                    <span class="auth-security-pill">OAuth 2.0 + OIDC</span>
+                </div>
+
+                <h2 class="auth-panel-title">Welcome back</h2>
+                <p class="auth-subtitle auth-subtitle-modern">Authenticate securely with Google to access your
+                    intelligent workflow workspace.</p>
+
+                <div class="google-auth-panel">
+                    <div class="google-auth-head">
+                        <div class="google-mark">G</div>
+                        <div>
+                            <h3>Continue with Google</h3>
+                            <p>One secure sign-in path for the FlowMind experience.</p>
+                        </div>
+                    </div>
+
+                    <div id="googleSigninSlot" class="google-signin-slot"></div>
+                    <div id="googleSigninStatus" class="google-signin-status">
+                        Waiting for Google Identity Services...
+                    </div>
+
+                    <button id="demoLoginBtn" class="demo-login-btn" onclick="handleDemoLogin()">
+                        Continue as Guest (Demo)
+                    </button>
+                </div>
+
+
+
+                <p class="auth-footer auth-footer-modern">
+                    FlowMind AI · Team NexaMind · Tic Tech Toe 2026
+                </p>
+            </div>
+        </section>
+    </main>
+
+    <script src="login.js"></script>
+</body>
+
+</html>

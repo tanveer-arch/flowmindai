@@ -1,92 +1,241 @@
-"""Execution runtime – runs normalized steps sequentially via the connector registry."""
+"""
+FlowMind — Member 4: Agent & Orchestration
+File: backend/runtime/executor.py
 
-from backend.connectors.registry import dispatch
+Workflow execution engine.
+
+Responsibilities:
+  • Iterate steps sequentially.
+  • Detect approval gates → pause and set "waiting_approval" status.
+  • Detect user-input gates → pause and set "waiting_user_input" status.
+  • Route MCP-enabled tools through mcp_client.call_mcp_tool().
+  • Route non-MCP tools through backend connector registry.
+  • Chain data between steps (inject prior results into params).
+  • Handle rollback on failure and set "failed_rolled_back" status.
+  • Log every meaningful event via store.log_event().
+"""
+
+import logging
+
+from backend.connectors.registry import get_connector
 from backend.runtime import store
+from backend.runtime.normalize import MCP_ENABLED_TOOLS
+
+log = logging.getLogger(__name__)
 
 
-def _build_connector_params(step: dict, run: dict) -> dict:
-    """Build params to pass to a connector based on tool type and prior step results.
+# ---------------------------------------------------------------------------
+# Data-chaining helpers
+# ---------------------------------------------------------------------------
 
-    Enriches the raw_input with concrete values so the fake connectors
-    receive the fields they expect.
+def _collect_prior_results(run: dict) -> dict:
     """
-    tool = step["tool"]
-    raw_input = step["params"].get("raw_input", "")
+    Build a lookup of {tool: result_data} from all successfully completed steps.
+    Used to inject upstream results into downstream step params.
+    """
+    prior: dict = {}
+    for step in run["steps"]:
+        if step.get("status") == "success" and step.get("result"):
+            result = step["result"]
+            if result.get("success"):
+                prior[step["tool"]] = result.get("data", {})
+    return prior
 
-    # Gather results from earlier steps (for chaining data forward)
-    prior_data: dict = {}
-    for s in run["steps"]:
-        if s["result"] and s["result"].get("success"):
-            prior_data[s["tool"]] = s["result"].get("data", {})
 
-    issue_data = prior_data.get("mock_pm", {})
+def _enrich_params(step: dict, prior: dict) -> dict:
+    """
+    Merge previous step results into the current step's params so connectors
+    receive full context (e.g., Jira ticket ID in GitHub body).
 
-    if tool == "mock_pm":
-        return {"priority": "critical"}
+    Rules:
+      • github/create_issue → inject jira_ticket_id if available.
+      • sheets/append_row   → inject all prior tool data into row_data.
+      • email/send_email    → inject user_edited_params if set.
+      • approval/request_user_input → pass through unchanged.
+    """
+    params = dict(step.get("params", {}))
+    tool   = step["tool"]
 
-    if tool == "slack":
-        title = issue_data.get("title", "Critical issue")
-        priority = issue_data.get("priority", "critical")
-        return {
-            "channel": "#alerts",
-            "text": f"🚨 {title} [priority: {priority}] — {raw_input}",
-        }
+    # Apply any user-edited params override (set by /submit-user-input endpoint)
+    user_edited = step.get("user_edited_params")
+    if user_edited and isinstance(user_edited, dict):
+        params.update(user_edited)
+
+    jira_data   = prior.get("jira",   {})
+    github_data = prior.get("github", {})
 
     if tool == "github":
-        title = issue_data.get("title", "Follow-up issue")
-        return {"title": f"Follow-up: {title}"}
+        jira_id = jira_data.get("ticket_id", "")
+        if jira_id and "body" in params:
+            params["body"] = params["body"].replace("JRA-?", jira_id)
+        elif jira_id:
+            params.setdefault("body", f"Linked to Jira ticket {jira_id}.")
 
     if tool == "sheets":
+        row_data = params.get("row_data", {})
+        if jira_data.get("ticket_id"):
+            row_data.setdefault("jira_id", jira_data["ticket_id"])
+        if github_data.get("issue_url"):
+            row_data.setdefault("github_issue_url", github_data["issue_url"])
+        if github_data.get("issue_id"):
+            row_data.setdefault("github_issue_id", github_data["issue_id"])
+        params["row_data"] = row_data
+
+    return params
+
+
+# ---------------------------------------------------------------------------
+# Step dispatcher
+# ---------------------------------------------------------------------------
+
+def _dispatch_step(step: dict, params: dict) -> dict:
+    """
+    Route the step to either the real MCP client or the backend connector registry.
+
+    Returns a standard result dict: {"success": bool, "message": str, "data": dict}
+    """
+    tool   = step["tool"]
+    action = step["action"]
+
+    if tool in MCP_ENABLED_TOOLS:
+        # Attempt real MCP call; fall back to connector on failure
+        try:
+            from mcp_client import call_mcp_tool, is_mcp_available
+            if is_mcp_available(tool):
+                log.info("executor: routing '%s/%s' via MCP", tool, action)
+                result = call_mcp_tool(tool, action, params)
+                if result.get("success"):
+                    return result
+                # MCP failed — fall through to connector
+                log.warning(
+                    "executor: MCP call for '%s/%s' failed (%s) — falling back to connector",
+                    tool, action, result.get("message"),
+                )
+            else:
+                log.info(
+                    "executor: MCP unavailable for '%s' — using connector fallback", tool
+                )
+        except ImportError:
+            log.warning("executor: mcp_client not importable — using connector fallback")
+
+    # --- Connector (REST / mock) fallback ---
+    try:
+        connector = get_connector(tool)
+        log.info("executor: routing '%s/%s' via connector", tool, action)
+        return connector.execute_action(action, params)
+    except Exception as exc:
+        log.error("executor: connector dispatch failed for '%s/%s': %s", tool, action, exc)
         return {
-            "sheet_name": "Escalation Log",
-            "row_data": {
-                "issue_id": issue_data.get("id", "N/A"),
-                "title": issue_data.get("title", "N/A"),
-                "priority": issue_data.get("priority", "N/A"),
-                "status": issue_data.get("status", "N/A"),
-            },
+            "success": False,
+            "message": f"Connector error for '{tool}/{action}': {exc}",
+            "data": {},
         }
 
-    # Fallback – just pass the raw input through
-    return {"raw_input": raw_input}
 
+# ---------------------------------------------------------------------------
+# Rollback
+# ---------------------------------------------------------------------------
 
-def execute_run(run: dict, start_from_step: str | None = None):
-    """Execute steps in order. Pauses on approval steps.
-
-    If start_from_step is given, skip all steps before it.
+def _attempt_rollback(run: dict) -> None:
+    """
+    Mark all already-completed steps as rolled back (best-effort).
+    We only log the intent; no actual undo is performed for external systems.
     """
     run_id = run["run_id"]
-    started = start_from_step is None  # if None, start from the beginning
+    for step in run["steps"]:
+        if step.get("status") == "success":
+            store.update_step(run_id, step["step_id"], "rolled_back")
+            store.log_event(run_id, step["step_id"], "info", "Step rolled back after downstream failure")
+
+
+# ---------------------------------------------------------------------------
+# Main execution engine
+# ---------------------------------------------------------------------------
+
+def execute_run(run: dict, start_from_step: str | None = None) -> None:
+    """
+    Execute the steps in *run* sequentially.
+
+    Args:
+        run:             The run dict from store.create_run() or store.get_run().
+        start_from_step: If given, skip all steps before this step_id (used
+                         when resuming after an approval or user-input gate).
+
+    Behaviour:
+      • Approval gate  → update status to "waiting_approval"  and return.
+      • User-input gate → update status to "waiting_user_input" and return.
+      • Step failure   → update run status to "failed_rolled_back" after rollback.
+      • All done       → update run status to "completed".
+    """
+    run_id  = run["run_id"]
+    started = start_from_step is None  # True means start from beginning
+
+    store.update_run_status(run_id, "running")
 
     for step in run["steps"]:
-        # Fast-forward to the resume point
+        step_id = step["step_id"]
+
+        # --- Fast-forward to resume point ---
         if not started:
-            if step["step_id"] == start_from_step:
+            if step_id == start_from_step:
                 started = True
             else:
                 continue
 
-        # Skip already-completed steps
-        if step["status"] in ("success", "failed"):
+        # --- Skip already-terminal steps ---
+        if step["status"] in ("success", "failed", "rolled_back"):
             continue
 
-        # --- Approval gate ---
-        if step["requires_approval"]:
-            store.update_step(run_id, step["step_id"], "waiting_approval")
+        tool = step["tool"]
+
+        # ----------------------------------------------------------------
+        # APPROVAL GATE
+        # ----------------------------------------------------------------
+        if tool == "approval":
+            store.update_step(run_id, step_id, "waiting_approval")
             store.update_run_status(run_id, "waiting_approval")
-            return  # pause execution
+            store.log_event(run_id, step_id, "info",
+                            "Workflow paused — awaiting human approval")
+            return  # caller must hit POST /approve to resume
 
-        # --- Normal tool execution ---
-        store.update_step(run_id, step["step_id"], "running")
-        params = _build_connector_params(step, run)
-        result = dispatch(step["tool"], step["action"], params)
-        status = "success" if result.get("success") else "failed"
-        store.update_step(run_id, step["step_id"], status, result)
+        # ----------------------------------------------------------------
+        # USER-INPUT GATE
+        # ----------------------------------------------------------------
+        if tool == "request_user_input":
+            store.update_step(run_id, step_id, "waiting_user_input")
+            store.update_run_status(run_id, "waiting_user_input")
+            question = step.get("params", {}).get("question", "Please provide input.")
+            store.log_event(run_id, step_id, "info",
+                            f"Workflow paused — awaiting user input: {question}")
+            return  # caller must hit POST /submit-user-input to resume
 
-        if status == "failed":
-            store.update_run_status(run_id, "failed")
+        # ----------------------------------------------------------------
+        # NORMAL TOOL EXECUTION
+        # ----------------------------------------------------------------
+        store.update_step(run_id, step_id, "running")
+        store.log_event(run_id, step_id, "info", f"Starting step: {tool}/{step['action']}")
+
+        prior  = _collect_prior_results(run)
+        params = _enrich_params(step, prior)
+
+        result = _dispatch_step(step, params)
+        success = result.get("success", False)
+        status  = "success" if success else "failed"
+
+        store.update_step(run_id, step_id, status, result)
+        store.log_event(
+            run_id, step_id,
+            "info" if success else "error",
+            result.get("message", ""),
+        )
+
+        if not success:
+            log.error("executor: step '%s' failed — beginning rollback", step_id)
+            _attempt_rollback(run)
+            store.update_run_status(run_id, "failed_rolled_back")
             return
 
-    # All steps done
+    # All steps finished successfully
     store.update_run_status(run_id, "completed")
+    store.log_event(run_id, "run", "info", "Workflow completed successfully")
+    log.info("executor: run '%s' completed", run_id)

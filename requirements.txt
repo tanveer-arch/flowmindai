@@ -3,3 +3,20 @@ fastapi>=0.100.0
 uvicorn>=0.20.0
 groq>=0.4.0
 python-dotenv>=1.0.0
+requests>=2.28.0
+
+# Google Sheets
+gspread>=6.0.0
+google-auth>=2.0.0
+
+# Database
+aiosqlite>=0.19.0
+
+# Auth
+python-jose[cryptography]>=3.3.0
+
+# MCP SDK
+mcp>=1.2.0
+
+# Optional — MCP Node.js integration (install separately via npm)
+# npx @modelcontextprotocol/server-github
