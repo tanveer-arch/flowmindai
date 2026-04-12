@@ -37,9 +37,10 @@ def _append_row(params: dict) -> dict:
     sheet_name = params.get("sheet_name", "Sheet1")
     row_data   = params.get("row_data", {})
 
-    # If credentials look like a real file path and sheet ID is set, attempt real API
-    if _SHEET_ID and _CREDS_PATH and os.path.isfile(_CREDS_PATH):
-        return _real_append(_SHEET_ID, sheet_name, row_data)
+    if _SHEET_ID and _CREDS_PATH:
+        creds_str = _CREDS_PATH.strip()
+        if creds_str.startswith("{") or os.path.isfile(_CREDS_PATH):
+            return _real_append(_SHEET_ID, sheet_name, row_data)
 
     # Mock fallback
     _row_counter += 1
@@ -59,10 +60,17 @@ def _append_row(params: dict) -> dict:
 def _real_append(sheet_id: str, sheet_name: str, row_data: dict) -> dict:
     try:
         import gspread
+        import json
         from google.oauth2.service_account import Credentials
 
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-        creds  = Credentials.from_service_account_file(_CREDS_PATH, scopes=scopes)
+        creds_str = _CREDS_PATH.strip()
+        if creds_str.startswith("{"):
+            creds_info = json.loads(creds_str)
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        else:
+            creds = Credentials.from_service_account_file(_CREDS_PATH, scopes=scopes)
+            
         client = gspread.authorize(creds)
         sheet  = client.open_by_key(sheet_id).worksheet(sheet_name)
 
