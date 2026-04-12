@@ -104,7 +104,9 @@ app.add_middleware(
         "http://localhost:3000",
         "https://flowmindai-one.vercel.app",  # Production Vercel frontend
         "https://flowmindai-git-main-tanveer-archs-projects.vercel.app",  # Git branch URL
+        "https://flowmindai-89f631f4c-tanveer-archs-projects.vercel.app", # User latest URL
     ],
+    allow_origin_regex=r"https://flowmindai.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
