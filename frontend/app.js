@@ -9,7 +9,7 @@
    - Voice-to-text input
    - Fallback demo templates when backend is offline
    ============================================================ */
-const API_BASE_URL = "http://localhost:8081";
+const API_BASE_URL = "https://flowmindai.onrender.com";
 
 // ─── Current Run State ───────────────────────────────────────
 let currentRunId = null;
