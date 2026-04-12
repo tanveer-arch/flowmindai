@@ -102,7 +102,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://flowmind-frontend.vercel.app",  # Update with your real Vercel URL after step 2 of deployment
+        "https://flowmindai-one.vercel.app",  # Production Vercel frontend
+        "https://flowmindai-git-main-tanveer-archs-projects.vercel.app",  # Git branch URL
     ],
     allow_credentials=True,
     allow_methods=["*"],
