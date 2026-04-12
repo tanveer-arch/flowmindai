@@ -27,3 +27,19 @@ Thumbs.db
 
 # Temp merge artifacts
 __temp_merge/
+
+# SQLite database (local only — Render uses its own)
+*.db
+*.sqlite
+*.sqlite3
+
+# Google Service Account credentials (NEVER commit this!)
+*.json
+!package.json
+
+# Node.js / MCP server cache
+node_modules/
+npm-debug.log*
+
+# Logs
+*.log
