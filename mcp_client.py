@@ -12,6 +12,7 @@ MCP servers are launched on-demand as short-lived Node.js stdio processes.
 import asyncio
 import logging
 import os
+import sys
 import subprocess
 from typing import Any
 
@@ -37,19 +38,14 @@ MCP_SERVER_CONFIGS: dict[str, dict] = {
         },
     },
     "sheets": {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-gdrive"],
-        "env_extra": {
-            "GDRIVE_CREDENTIALS": os.getenv("GOOGLE_SHEETS_CREDENTIALS", ""),
-        },
+        "command": sys.executable,
+        "args": ["-m", "backend.mcp_servers.mcp_sheets"],
+        "env_extra": {},
     },
     "email": {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-gmail"],
-        "env_extra": {
-            "GMAIL_ADDRESS":      os.getenv("EMAIL_ADDRESS", ""),
-            "GMAIL_APP_PASSWORD": os.getenv("EMAIL_APP_PASSWORD", ""),
-        },
+        "command": sys.executable,
+        "args": ["-m", "backend.mcp_servers.mcp_email"],
+        "env_extra": {},
     },
 }
 
@@ -85,23 +81,28 @@ def is_mcp_available(tool_name: str) -> bool:
         _availability_cache[tool_name] = False
         return False
 
-    # Quick sanity-check: is npx on the PATH?
-    try:
-        result = subprocess.run(
-            ["npx", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        available = result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        available = False
+    # Quick sanity-check: is the tool command available?
+    command = MCP_SERVER_CONFIGS[tool_name]["command"]
+    if command == "npx":
+        try:
+            result = subprocess.run(
+                ["npx", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            available = result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            available = False
+    else:
+        # sys.executable is inherently available
+        available = True
 
     _availability_cache[tool_name] = available
     if not available:
         log.warning(
-            "is_mcp_available: npx not found or failed — MCP tool '%s' unavailable",
-            tool_name,
+            "is_mcp_available: command '%s' not found or failed — MCP tool '%s' unavailable",
+            command, tool_name,
         )
     return available
 

@@ -41,10 +41,8 @@ TOOL_ACTION_MAP: dict[str, str] = {
     "request_approval":    "request_approval",
 }
 
-# Tools that use a real MCP server (Node.js stdio process) instead of REST
-# email and sheets are disabled entirely from MCP because they require
-# interactive OAuth or exact file paths which hang/fail on Render.
-MCP_ENABLED_TOOLS: set[str] = {"github"}
+# Tools that use a real MCP server (via stdio protocol) instead of REST
+MCP_ENABLED_TOOLS: set[str] = {"github", "sheets", "email"}
 
 
 # ---------------------------------------------------------------------------
