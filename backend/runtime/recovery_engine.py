@@ -1,15 +1,18 @@
-"""Self-Healing / Adaptive Retry Engine – wraps connector dispatch with
+"""Self-Healing / Adaptive Retry Engine – wraps MCP dispatch with
 intelligent retry, failure classification, fallback handling, and
 continue-if-safe logic.
 
 This module is a *pure extension layer*.  It does **not** modify any
-existing connector or executor code.  The single entry-point consumed by
-the executor is ``safe_dispatch(step, params, run)``.
+existing MCP client or executor code.  The single entry-point consumed by
+the executor is ``safe_dispatch(step, params)``.
+
+Phase 1: Rewired from backend.connectors.registry.dispatch → mcp_client.dispatch_mcp.
+         All tool execution now routes through MCP servers only.
 """
 
 import logging
 import time
-from backend.connectors.registry import dispatch
+from mcp_client import call_mcp_tool as dispatch
 
 # ──────────────────────────────────────────────────────────────
 # Logger – adds a dedicated "recovery" logger alongside existing logs

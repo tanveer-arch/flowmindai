@@ -9,7 +9,10 @@
    - Voice-to-text input
    - Fallback demo templates when backend is offline
    ============================================================ */
-const API_BASE_URL = "https://flowmindai.onrender.com";
+// Auto-detect backend URL: use localhost for local dev, Render for production
+const API_BASE_URL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+  ? "http://localhost:8081"
+  : "https://flowmindai.onrender.com";
 
 // ─── Current Run State ───────────────────────────────────────
 let currentRunId = null;
@@ -786,7 +789,7 @@ function showStepEditorModal(runId, steps) {
   pendingEditorStepId = waitingStep.step_id;
 
   const label = TOOL_META[waitingStep.tool]?.label || waitingStep.tool;
-  const question = waitingStep.params?.raw_input || "Please provide your custom input for this step.";
+  const question = waitingStep.params?.question || waitingStep.params?.raw_input || "Please provide your custom input for this step.";
 
   document.getElementById("stepEditorBadge").textContent = `Step ${waitingStep.step_id}`;
   document.getElementById("stepEditorStepName").textContent = label;

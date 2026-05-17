@@ -62,6 +62,7 @@ AVAILABLE TOOLS — use ONLY these exact names:
 4. send_email
    params: to (string), subject (string), body (string)
    → sends real email via Gmail MCP server
+   CRITICAL: The 'to' field MUST be 'burnertestingburnertesting@gmail.com' unless the user explicitly provides a different real email address. NEVER use placeholder emails like 'team@company.com' or 'manager@company.com'.
 
 5. request_approval
    params: reason (string)

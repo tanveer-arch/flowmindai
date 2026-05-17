@@ -19,6 +19,7 @@ import logging
 import requests as http_requests
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,6 +43,11 @@ GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 _sessions: dict[str, dict] = {}
 
 
+# ── Request model for token verification ──────────────────────────
+class GoogleTokenRequest(BaseModel):
+    credential: str
+
+
 # ── Helper functions ──────────────────────────────────────────────
 
 def get_user_from_token(token: str) -> dict | None:
@@ -60,15 +66,56 @@ def get_optional_user(request: Request) -> dict | None:
 
 # ── Routes ────────────────────────────────────────────────────────
 
-@router.get("/google/login")
-def google_login():
-    """Redirect user to Google's OAuth consent screen."""
+@router.post("/verify-google-token")
+def verify_google_token(req: GoogleTokenRequest):
+    """Verify a Google ID token from the frontend and create a session.
+
+    This is the primary auth endpoint. The frontend sends the Google
+    credential (JWT) received from Google Identity Services, and this
+    endpoint verifies it and returns a FlowMind session token.
+    """
+    from backend.auth.google_verify import verify_google_id_token
+
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(
             status_code=500,
             detail="GOOGLE_CLIENT_ID not configured. Add it to .env",
         )
 
+    user_info = verify_google_id_token(req.credential, GOOGLE_CLIENT_ID)
+    if not user_info:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Google credential. Please sign in again.",
+        )
+
+    # Create session
+    session_token = secrets.token_hex(32)
+    user = {
+        "user_id": user_info.get("sub", ""),
+        "email":   user_info.get("email", ""),
+        "name":    user_info.get("name", ""),
+        "picture": user_info.get("picture", ""),
+    }
+    _sessions[session_token] = user
+    log.info("auth: user logged in via OIDC — %s", user["email"])
+
+    return {
+        "token": session_token,
+        "user": user,
+    }
+
+
+@router.get("/google/login")
+def google_login():
+    """Redirect user to Google's OAuth consent screen (legacy fallback)."""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_CLIENT_ID not configured. Add it to .env",
+        )
+
+    from urllib.parse import urlencode
     params = {
         "client_id":     GOOGLE_CLIENT_ID,
         "redirect_uri":  GOOGLE_REDIRECT_URI,
@@ -77,13 +124,13 @@ def google_login():
         "access_type":   "offline",
         "prompt":        "consent",
     }
-    url = GOOGLE_AUTH_URL + "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    url = GOOGLE_AUTH_URL + "?" + urlencode(params)
     return RedirectResponse(url)
 
 
 @router.get("/google/callback")
 def google_callback(code: str = ""):
-    """Handle Google OAuth callback — exchange code for token."""
+    """Handle Google OAuth callback — exchange code for token (legacy fallback)."""
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
 
@@ -122,7 +169,7 @@ def google_callback(code: str = ""):
         "picture": profile.get("picture", ""),
     }
     _sessions[session_token] = user
-    log.info("auth: user logged in — %s", user["email"])
+    log.info("auth: user logged in via OAuth callback — %s", user["email"])
 
     # Redirect frontend with token
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -152,3 +199,4 @@ def logout(request: Request):
     token = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else ""
     _sessions.pop(token, None)
     return {"message": "Logged out"}
+

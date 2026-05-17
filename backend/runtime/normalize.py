@@ -2,8 +2,11 @@
 FlowMind — Member 4: Agent & Orchestration
 File: backend/runtime/normalize.py
 
-Exposes: normalize_steps(), translate_agent_steps(),
-         AGENT_TOOL_REMAP, MCP_ENABLED_TOOLS, TOOL_ACTION_MAP
+Exposes: normalize_steps(), translate_agent_steps(), infer_dependencies(),
+         AGENT_TOOL_REMAP, TOOL_ACTION_MAP
+
+Phase 1: All tools execute via MCP. MCP_ENABLED_TOOLS removed.
+Phase 2: Added depends_on field and infer_dependencies() for DAG execution.
 """
 
 import logging
@@ -24,7 +27,7 @@ AGENT_TOOL_REMAP: dict[str, str] = {
     "request_user_input":  "request_user_input",
 }
 
-# Maps backend canonical tool names (and LLM aliases) → connector action strings
+# Maps backend canonical tool names (and LLM aliases) → MCP action strings
 TOOL_ACTION_MAP: dict[str, str] = {
     # Canonical backend names
     "jira":               "create_ticket",
@@ -41,8 +44,70 @@ TOOL_ACTION_MAP: dict[str, str] = {
     "request_approval":    "request_approval",
 }
 
-# Tools that use a real MCP server (via stdio protocol) instead of REST
-MCP_ENABLED_TOOLS: set[str] = {"github", "sheets", "email"}
+# Phase 1: All executable tools are MCP-backed. No MCP_ENABLED_TOOLS gate needed.
+# Gate/control tools (approval, request_user_input) are handled by the executor directly.
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Dependency inference for DAG execution
+# ---------------------------------------------------------------------------
+
+# Known data-flow relationships between tools
+_DATA_DEPENDENCIES: dict[str, set[str]] = {
+    "github": {"jira"},             # GitHub body references Jira ticket_id
+    "sheets": {"jira", "github"},   # Sheets row includes jira_id + github_issue_url
+    "email":  set(),                # Email has no strict data dependency
+    "jira":   set(),                # Jira has no upstream data dependency
+}
+
+# Gate tools that block all subsequent steps
+_GATE_TOOLS: set[str] = {"approval", "request_user_input"}
+
+
+def infer_dependencies(steps: list[dict]) -> None:
+    """
+    Populate the ``depends_on`` field for each step based on data-flow analysis.
+
+    Rules:
+      1. Gate tools (approval, request_user_input) depend on ALL prior steps.
+      2. All steps AFTER a gate depend on that gate.
+      3. Data dependencies: e.g., GitHub depends on Jira if Jira appears earlier.
+      4. Steps with no dependencies can run in parallel.
+
+    Mutates steps in-place.
+    """
+    tool_to_step_id: dict[str, str] = {}
+    last_gate_id: str | None = None
+
+    for i, step in enumerate(steps):
+        step_id = step["step_id"]
+        tool = step["tool"]
+        deps: list[str] = []
+
+        # Rule 2: If there was a gate before us, we depend on it
+        if last_gate_id is not None:
+            deps.append(last_gate_id)
+
+        # Rule 1: Gate tools depend on ALL prior steps
+        if tool in _GATE_TOOLS:
+            deps = [s["step_id"] for s in steps[:i]]
+            last_gate_id = step_id
+        else:
+            # Rule 3: Data dependencies from upstream tools
+            data_deps = _DATA_DEPENDENCIES.get(tool, set())
+            for dep_tool in data_deps:
+                if dep_tool in tool_to_step_id:
+                    dep_id = tool_to_step_id[dep_tool]
+                    if dep_id not in deps:
+                        deps.append(dep_id)
+
+        step["depends_on"] = deps
+        tool_to_step_id[tool] = step_id
+
+    log.info(
+        "infer_dependencies: %s",
+        {s["step_id"]: s["depends_on"] for s in steps},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -72,31 +137,9 @@ def normalize_steps(steps: list) -> list:
     Convert a list of raw step dicts (from the LLM or agent) into the internal
     task format that `store.create_run()` and the executor expect.
 
-    Accepts two flavours of input step:
-      • New contract  → {"tool": "create_jira_ticket", "params": {"summary": "..."}}
-      • Legacy contract → {"tool": "...", "input": "some string"}  (backward compat)
-
-    For each step:
-      1. Remap LLM tool name to backend canonical name via AGENT_TOOL_REMAP.
-      2. Derive the connector action via TOOL_ACTION_MAP.
-      3. Build a normalized step dict matching the store contract shape.
-      4. Unknown tool → log a warning and skip (never crash).
-
-    Returns:
-        List of normalized step dicts:
-        [
-          {
-            "step_id": "step_0",
-            "tool": "jira",
-            "action": "create_ticket",
-            "params": {"summary": "...", ...},
-            "requires_approval": False,
-            "status": "pending",
-            "result": None,
-            "user_edited_params": None,
-          },
-          ...
-        ]
+    Phase 2: Each step now includes a ``depends_on`` list of step_ids, populated
+    by ``infer_dependencies()``. The DAG executor uses this to run independent
+    steps in parallel.
     """
     normalized: list[dict] = []
 
@@ -109,7 +152,6 @@ def normalize_steps(steps: list) -> list:
         # --- Step 2: Derive action ---
         action = TOOL_ACTION_MAP.get(tool)
         if action is None:
-            # Also try the un-remapped name as fallback
             action = TOOL_ACTION_MAP.get(raw_tool)
 
         if action is None:
@@ -120,17 +162,14 @@ def normalize_steps(steps: list) -> list:
             continue
 
         # --- Step 3: Extract params ---
-        # New API uses "params" dict; legacy API used "input" string.
         if "params" in step and isinstance(step["params"], dict):
             params = dict(step["params"])
         else:
-            # Legacy: wrap the raw "input" string so connectors still work
             params = {"raw_input": step.get("input", "")}
 
-        # --- Step 4: Build normalized step matching store contract ---
-        is_approval      = tool == "approval"
-        is_user_input    = tool == "request_user_input"
-        requires_approval = is_approval  # user_input gate is handled by the executor
+        # --- Step 4: Build normalized step ---
+        is_approval = tool == "approval"
+        requires_approval = is_approval
 
         normalized.append({
             "step_id":            f"step_{idx}",
@@ -138,9 +177,12 @@ def normalize_steps(steps: list) -> list:
             "action":             action,
             "params":             params,
             "requires_approval":  requires_approval,
+            "depends_on":         [],
             "status":             "pending",
             "result":             None,
             "user_edited_params": None,
         })
 
+    # Phase 2: Infer step dependencies for DAG execution
+    infer_dependencies(normalized)
     return normalized

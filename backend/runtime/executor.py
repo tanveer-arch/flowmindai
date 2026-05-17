@@ -8,18 +8,22 @@ Responsibilities:
   • Iterate steps sequentially.
   • Detect approval gates → pause and set "waiting_approval" status.
   • Detect user-input gates → pause and set "waiting_user_input" status.
-  • Route MCP-enabled tools through mcp_client.call_mcp_tool().
-  • Route non-MCP tools through backend connector registry.
+  • Route ALL tool execution through mcp_client.call_mcp_tool() — no connector fallback.
   • Chain data between steps (inject prior results into params).
   • Handle rollback on failure and set "failed_rolled_back" status.
   • Log every meaningful event via store.log_event().
+
+Phase 1 changes:
+  - REMOVED: from backend.connectors.registry import get_connector
+  - REMOVED: connector fallback path in _dispatch_step()
+  - ALL tool execution goes through MCP client only
+  - MCP failure is a hard error (no mock/REST fallback)
 """
 
 import logging
 
-from backend.connectors.registry import get_connector
 from backend.runtime import store
-from backend.runtime.normalize import MCP_ENABLED_TOOLS
+from backend.runtime.normalize import TOOL_ACTION_MAP
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +48,7 @@ def _collect_prior_results(run: dict) -> dict:
 
 def _enrich_params(step: dict, prior: dict) -> dict:
     """
-    Merge previous step results into the current step's params so connectors
+    Merge previous step results into the current step's params so MCP servers
     receive full context (e.g., Jira ticket ID in GitHub body).
 
     Rules:
@@ -85,49 +89,54 @@ def _enrich_params(step: dict, prior: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step dispatcher
+# Step dispatcher — MCP-ONLY (Phase 1)
 # ---------------------------------------------------------------------------
 
 def _dispatch_step(step: dict, params: dict) -> dict:
     """
-    Route the step to either the real MCP client or the backend connector registry.
+    Route the step through the recovery engine (which delegates to the MCP client).
+    Handles retries, fallbacks, and safe continuation on failure.
 
     Returns a standard result dict: {"success": bool, "message": str, "data": dict}
     """
     tool   = step["tool"]
     action = step["action"]
 
-    if tool in MCP_ENABLED_TOOLS:
-        # Attempt real MCP call; fall back to connector on failure
-        try:
-            from mcp_client import call_mcp_tool, is_mcp_available
-            if is_mcp_available(tool):
-                log.info("executor: routing '%s/%s' via MCP", tool, action)
-                result = call_mcp_tool(tool, action, params)
-                if result.get("success"):
-                    return result
-                # MCP failed — fall through to connector
-                log.warning(
-                    "executor: MCP call for '%s/%s' failed (%s) — falling back to connector",
-                    tool, action, result.get("message"),
-                )
-            else:
-                log.info(
-                    "executor: MCP unavailable for '%s' — using connector fallback", tool
-                )
-        except ImportError:
-            log.warning("executor: mcp_client not importable — using connector fallback")
-
-    # --- Connector (REST / mock) fallback ---
     try:
-        connector = get_connector(tool)
-        log.info("executor: routing '%s/%s' via connector", tool, action)
-        return connector.execute_action(action, params)
-    except Exception as exc:
-        log.error("executor: connector dispatch failed for '%s/%s': %s", tool, action, exc)
+        from backend.runtime.recovery_engine import safe_dispatch
+        from mcp_client import is_mcp_available
+
+        if not is_mcp_available(tool):
+            log.error("executor: MCP server unavailable for '%s' — no fallback", tool)
+            return {
+                "success": False,
+                "message": f"MCP server for '{tool}' is not available. No fallback configured.",
+                "data": {},
+            }
+
+        log.info("executor: routing '%s/%s' via recovery engine (MCP)", tool, action)
+        result = safe_dispatch(step, params)
+
+        if not result.get("success"):
+            log.error(
+                "executor: recovery engine call for '%s/%s' failed: %s",
+                tool, action, result.get("message"),
+            )
+
+        return result
+
+    except ImportError as exc:
+        log.error("executor: dependency not importable — cannot execute step: %s", exc)
         return {
             "success": False,
-            "message": f"Connector error for '{tool}/{action}': {exc}",
+            "message": f"Dependency import error: {exc}. Ensure mcp package is installed.",
+            "data": {},
+        }
+    except Exception as exc:
+        log.error("executor: safe_dispatch failed for '%s/%s': %s", tool, action, exc)
+        return {
+            "success": False,
+            "message": f"Safe dispatch error for '{tool}/{action}': {exc}",
             "data": {},
         }
 
@@ -210,7 +219,7 @@ def execute_run(run: dict, start_from_step: str | None = None) -> None:
             return  # caller must hit POST /submit-user-input to resume
 
         # ----------------------------------------------------------------
-        # NORMAL TOOL EXECUTION
+        # NORMAL TOOL EXECUTION (MCP-only, no connector fallback)
         # ----------------------------------------------------------------
         store.update_step(run_id, step_id, "running")
         store.log_event(run_id, step_id, "info", f"Starting step: {tool}/{step['action']}")

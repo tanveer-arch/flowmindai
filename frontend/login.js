@@ -54,33 +54,50 @@ function redirectToApp() {
     window.location.href = "index.html";
 }
 
-function handleGoogleCredentialResponse(response) {
+async function handleGoogleCredentialResponse(response) {
     if (!response?.credential) {
         updateGoogleStatus("Google sign-in failed. Please try again.", "error");
         return;
     }
 
-    const payload = decodeJwtPayload(response.credential);
-    if (!payload?.email) {
-        updateGoogleStatus("Google returned an invalid identity token.", "error");
-        return;
+    updateGoogleStatus("Verifying secure token with backend...", "neutral");
+
+    try {
+        // Auto-detect backend URL: use localhost for local dev, Render for production
+        const API_BASE_URL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+            ? "http://localhost:8081"
+            : "https://flowmindai.onrender.com";
+
+        const res = await fetch(`${API_BASE_URL}/auth/verify-google-token`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ credential: response.credential }),
+        });
+
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || "Verification failed");
+        }
+
+        const data = await res.json();
+        const { token, user } = data;
+
+        const displayName = user.name || user.email;
+
+        setStoredSession({
+            token: token, // This is now the secure backend session token
+            user: displayName,
+            profile: user,
+        });
+
+        updateGoogleStatus(`Signed in as ${displayName}. Redirecting...`, "success");
+        setTimeout(redirectToApp, 500);
+    } catch (error) {
+        console.error("Backend verification error:", error);
+        updateGoogleStatus("Authentication failed: " + error.message, "error");
     }
-
-    const displayName = payload.name || payload.given_name || payload.email;
-    const profile = {
-        name: displayName,
-        email: payload.email,
-        picture: payload.picture || "",
-    };
-
-    setStoredSession({
-        token: response.credential,
-        user: displayName,
-        profile,
-    });
-
-    updateGoogleStatus(`Signed in as ${displayName}. Redirecting...`, "success");
-    setTimeout(redirectToApp, 500);
 }
 
 function handleDemoLogin() {

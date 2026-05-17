@@ -37,6 +37,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# ---------------------------------------------------------------------------
+# Logging — must be initialized BEFORE any imports that may reference `log`
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger(__name__)
+
 from agent import generate_steps
 from backend.runtime import store
 from backend.runtime.executor import execute_run
@@ -60,15 +69,6 @@ try:
 except ImportError:
     _STANDALONE_AUTH = False
     log.warning("backend.auth package not available; auth features disabled")
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +102,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "https://flowmindai-one.vercel.app",  # Production Vercel frontend
         "https://flowmindai-git-main-tanveer-archs-projects.vercel.app",  # Git branch URL
         "https://flowmindai-89f631f4c-tanveer-archs-projects.vercel.app", # User latest URL
